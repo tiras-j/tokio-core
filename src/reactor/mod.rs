@@ -238,7 +238,7 @@ impl Core {
                     return Ok(e)
                 }
             }
-            future_fired = self.poll(None);
+            future_fired = self.poll(None).0;
         }
     }
 
@@ -248,13 +248,16 @@ impl Core {
     /// It only makes sense to call this method if you've previously spawned
     /// a future onto this event loop.
     ///
+    /// This function will return a boolean indicating whether progress has
+    /// been made during this iteration of the event loop.
+    ///
     /// `loop { lp.turn(None) }` is equivalent to calling `run` with an
     /// empty future (one that never finishes).
-    pub fn turn(&mut self, max_wait: Option<Duration>) {
-        self.poll(max_wait);
+    pub fn turn(&mut self, max_wait: Option<Duration>) -> bool {
+        self.poll(max_wait).1
     }
 
-    fn poll(&mut self, max_wait: Option<Duration>) -> bool {
+    fn poll(&mut self, max_wait: Option<Duration>) -> (bool, bool) {
         // Given the `max_wait` variable specified, figure out the actual
         // timeout that we're going to pass to `poll`. This involves taking a
         // look at active timers on our heap as well.
@@ -275,7 +278,7 @@ impl Core {
         // happened.
         let amt = match self.inner.borrow_mut().io.poll(&mut self.events, timeout) {
             Ok(a) => a,
-            Err(ref e) if e.kind() == ErrorKind::Interrupted => return false,
+            Err(ref e) if e.kind() == ErrorKind::Interrupted => return (false, false),
             Err(e) => panic!("error in poll: {}", e),
         };
 
@@ -289,6 +292,7 @@ impl Core {
 
         // Process all the events that came in, dispatching appropriately
         let mut fired = false;
+        let mut progress = false;
         for i in 0..self.events.len() {
             let event = self.events.get(i).unwrap();
             let token = event.token();
@@ -302,10 +306,11 @@ impl Core {
                 fired = true;
             } else {
                 self.dispatch(token, event.readiness());
+                progress = true;
             }
         }
         debug!("loop process - {} events, {:?}", amt, after_poll.elapsed());
-        return fired
+        return (fired, progress)
     }
 
     fn dispatch(&mut self, token: mio::Token, ready: mio::Ready) {
